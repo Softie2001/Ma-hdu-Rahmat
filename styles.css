@@ -460,7 +460,6 @@ html[dir="rtl"] .section-lead { font-family: var(--font-body-ar); font-size: 1.0
 .class-node:last-child::after { display: none; }
 .class-node-ar { font-family: var(--font-display-ar); font-size: 1.15rem; color: var(--pine); font-weight: 600; }
 .class-node-en { font-size: 0.75rem; color: var(--ink-soft); text-transform: uppercase; letter-spacing: 0.05em; }
-.class-node[data-tier="tadrij"] .class-node-ar { color: var(--gold); }
 .class-node[data-tier="idadi"] { }
 .class-node[data-tier="thanawi"] .class-node-ar { color: var(--emerald); }
 
