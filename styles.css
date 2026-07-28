@@ -550,10 +550,14 @@ html[dir="rtl"] .step-card p { font-family: var(--font-body-ar); font-size: 0.95
 
 .news-grid {
   display: grid;
-  grid-template-columns: 1.3fr 1fr 1fr;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 24px;
 }
-@media (max-width: 900px) { .news-grid { grid-template-columns: 1fr; } }
+.news-grid .news-card-feature { grid-column: span 2; }
+@media (max-width: 700px) {
+  .news-grid { grid-template-columns: 1fr; }
+  .news-grid .news-card-feature { grid-column: span 1; }
+}
 .news-card {
   background: var(--ivory);
   border-radius: var(--radius-md);

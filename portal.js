@@ -106,8 +106,8 @@
     return fsGetAll('students').then(function (list) {
       if (list.length > 0) return;
       var demo = [
-        { matric: 'MDU/26/IDD/0001', fullName: 'Demo Student One', classLabel: "Thānī I'dādī" },
-        { matric: 'MDU/26/THN/0001', fullName: 'Demo Student Two', classLabel: 'Thanawī Awwal' }
+        { matric: 'MDU/26/IDD/0001', fullName: 'Demo Student One', classLabel: 'الصف الثاني الإعدادي — Second Preparatory' },
+        { matric: 'MDU/26/THN/0001', fullName: 'Demo Student Two', classLabel: 'الصف الأول الثانوي — First Secondary' }
       ];
       return Promise.all(demo.map(function (s) { return fsAdd('students', s); }));
     }).catch(function () { /* ignore seed errors */ });
