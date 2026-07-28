@@ -399,3 +399,121 @@ fieldset.field { border: none; padding: 0; }
 .dash-table th { text-align: left; font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); padding: 8px 10px; border-bottom: 1px solid var(--line); }
 .dash-table td { padding: 10px; border-bottom: 1px solid var(--line); color: var(--ink); }
 .dash-table tr:last-child td { border-bottom: none; }
+
+/* ---------- Full-detail review modal ---------- */
+.detail-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(11,42,92,0.45);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: 40px 16px;
+  z-index: 200;
+  overflow-y: auto;
+}
+.detail-modal {
+  background: var(--ivory);
+  border-radius: var(--radius-md);
+  max-width: 640px;
+  width: 100%;
+  padding: 28px 28px 24px;
+}
+.detail-modal-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+.detail-modal-head h2 { font-family: var(--font-display-en); font-size: 1.25rem; color: var(--pine); font-weight: 600; }
+.detail-modal-close {
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--ink-soft);
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+}
+.detail-modal-close:hover { background: var(--tint); color: var(--ink); }
+.detail-modal-actions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+/* ---------- Printable payment receipt ---------- */
+.receipt-wrap { max-width: 720px; }
+.receipt-sheet {
+  background: var(--ivory);
+  border: 1px solid var(--line);
+  padding: 32px;
+  position: relative;
+}
+.receipt-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  border-bottom: 2px solid var(--pine);
+  padding-bottom: 16px;
+  margin-bottom: 20px;
+}
+.receipt-head-left { display: flex; gap: 12px; align-items: center; }
+.receipt-head-left img { width: 44px; height: 44px; object-fit: contain; }
+.receipt-head-left h2 { font-family: var(--font-display-en); font-size: 1.15rem; color: var(--pine); font-weight: 600; }
+.receipt-head-left p { font-size: 0.78rem; color: var(--ink-soft); }
+.receipt-photo-box {
+  width: 84px; height: 100px;
+  border: 1.5px dashed var(--line);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  font-size: 0.65rem;
+  color: var(--ink-soft);
+  padding: 4px;
+  flex-shrink: 0;
+}
+.receipt-title { text-align: center; margin-bottom: 20px; }
+.receipt-title h1 { font-family: var(--font-display-en); font-size: 1.3rem; color: var(--pine); font-weight: 600; }
+.receipt-title p { font-size: 0.82rem; color: var(--ink-soft); margin-top: 2px; }
+.receipt-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 24px;
+  margin-bottom: 24px;
+  font-size: 0.9rem;
+}
+.receipt-grid .full-row { grid-column: 1 / -1; }
+.receipt-grid dt { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); }
+.receipt-grid dd { font-weight: 500; color: var(--ink); }
+.receipt-amount-box {
+  background: var(--tint);
+  border: 1px solid var(--line);
+  padding: 14px 18px;
+  margin-bottom: 28px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.receipt-amount-box .label { font-size: 0.8rem; color: var(--ink-soft); }
+.receipt-amount-box .value { font-family: var(--font-display-en); font-size: 1.4rem; color: var(--pine); font-weight: 600; }
+.receipt-signatures {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 32px;
+  margin-top: 40px;
+}
+.receipt-sig { text-align: center; }
+.receipt-sig .sig-line { border-top: 1px solid var(--ink); margin-bottom: 6px; height: 40px; }
+.receipt-sig .sig-label { font-size: 0.78rem; color: var(--ink-soft); }
+.receipt-actions { display: flex; gap: 12px; justify-content: center; margin-top: 20px; }
+
+@media print {
+  body * { visibility: hidden; }
+  .receipt-sheet, .receipt-sheet * { visibility: visible; }
+  .receipt-sheet { position: absolute; top: 0; left: 0; width: 100%; border: none; padding: 20px; }
+  .receipt-actions, .detail-modal-close { display: none !important; }
+}
