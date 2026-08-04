@@ -14,6 +14,7 @@ import {
   setDoc,
   addDoc,
   updateDoc,
+  deleteDoc,
   query,
   where
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -50,7 +51,7 @@ const secondaryAuth = getAuth(secondaryApp);
 
 window.mripDb = {
   db,
-  collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, query, where
+  collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, query, where
 };
 
 window.mripAuth = {
