@@ -165,7 +165,12 @@
     teacher: 'staff', classteacher: 'staff', bursar: 'staff', examofficer: 'staff', admin: 'staff'
   };
 
-  function announcementMatchesUser(a, role, classCode) {
+  function announcementMatchesUser(a, role, classCode, isGraduated) {
+    // Graduated students are no longer "active" — they keep access to
+    // their own historical records, but stop receiving announcements
+    // aimed at the current student body.
+    if (role === 'student' && isGraduated) return false;
+
     var aud = a.audience || [];
     if (aud.indexOf('everyone') > -1) {
       // still respect a class filter if one is set and this user is a student
@@ -192,6 +197,24 @@
     var div = document.createElement('div');
     div.textContent = str || '';
     return div.innerHTML;
+  }
+
+  // Records an entry in the audit trail. Never blocks or throws on the
+  // caller — an audit log failure should never stop the real action
+  // (e.g. a session transition) from completing.
+  function logAudit(action, details) {
+    try {
+      var fa = window.mripAuth;
+      var user = fa && fa.auth ? fa.auth.currentUser : null;
+      var nameEl = document.getElementById('dashUserName');
+      fsAdd('auditLogs', {
+        user: (nameEl && nameEl.textContent) || (user && user.email) || 'Unknown',
+        userUid: user ? user.uid : null,
+        action: action,
+        details: details || {},
+        timestamp: new Date().toISOString()
+      }).catch(function () { /* audit logging is best-effort */ });
+    } catch (e) { /* never let logging break the real action */ }
   }
 
   /* ===================================================================
@@ -523,8 +546,9 @@
         myReads.forEach(function (r) { readIds[r.announcementId] = true; });
 
         var classCode = role === 'student' ? profile.classCode : null;
+        var isGraduated = role === 'student' && !!profile.graduated;
         var relevant = all.filter(function (a) {
-          return getEffectiveStatus(a) === 'published' && announcementMatchesUser(a, role, classCode);
+          return getEffectiveStatus(a) === 'published' && announcementMatchesUser(a, role, classCode, isGraduated);
         }).sort(function (a, b) { return new Date(b.publishDate || b.createdAt) - new Date(a.publishDate || a.createdAt); });
 
         if (relevant.length === 0) {
@@ -849,6 +873,7 @@
           '<div class="admin-subnav">' +
             '<button class="admin-subnav-btn" type="button" data-admin-view="overview">Overview</button>' +
             '<button class="admin-subnav-btn" type="button" data-admin-view="sessions">Academic Sessions</button>' +
+            '<button class="admin-subnav-btn" type="button" data-admin-view="staffing">Staff Assignments</button>' +
             '<button class="admin-subnav-btn" type="button" data-admin-view="comm">Communication Center</button>' +
           '</div>' +
           '<div id="adminContentArea"></div>' +
@@ -865,6 +890,8 @@
         renderCommunicationCenter(adminCurrentCommView);
       } else if (adminCurrentView === 'sessions') {
         renderAcademicSessions(adminCurrentSessionView);
+      } else if (adminCurrentView === 'staffing') {
+        renderStaffAssignments();
       } else {
         renderAdminOverview();
       }
@@ -1667,7 +1694,7 @@
         var users = results[2];
         var staff = results[3];
 
-        var students = users.filter(function (u) { return u.role === 'student'; });
+        var students = users.filter(function (u) { return u.role === 'student' && !u.graduated; });
         var parents = users.filter(function (u) { return u.role === 'parent'; });
 
         function eligibleCount(audienceKey, list, matchFn) {
@@ -1824,9 +1851,33 @@
 
         if (draft) {
           body.innerHTML =
-            '<div class="dash-card dash-card-wide notice notice-info">' +
-              'A next session ("' + escapeHtml(draft.name) + '") has already been created and is waiting to start. Go to <strong>Start New Session</strong> to review and activate it, or archive it from the Firestore console if you need to start over.' +
+            '<div class="dash-card dash-card-wide notice notice-info" style="margin-bottom:16px;">' +
+              'A next session is already waiting to start. Go to <strong>Start New Session</strong> to review and activate it, or rename it below if needed.' +
+            '</div>' +
+            '<div class="dash-card dash-card-wide">' +
+              '<h3>Edit Draft Session</h3>' +
+              '<form id="editSessionForm" style="margin-top:16px;">' +
+                '<label class="field"><span>Session Name <em>*</em></span><input type="text" name="sessionName" value="' + escapeHtml(draft.name) + '" required></label>' +
+                '<div class="panel-actions"><span></span><button type="submit" class="btn btn-gold">Save Changes</button></div>' +
+              '</form>' +
             '</div>';
+
+          document.getElementById('editSessionForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+            var newName = (new FormData(e.target).get('sessionName') || '').trim();
+            if (!newName) return;
+            var submitBtn = e.target.querySelector('button[type="submit"]');
+            setBusy(submitBtn, true, 'Saving…');
+            var oldName = draft.name;
+            fsUpdate('academicSessions', draft.id, { name: newName }).then(function () {
+              logAudit('Draft session renamed', { from: oldName, to: newName });
+              alert('Draft session renamed to "' + newName + '".');
+              renderAcademicSessions('create');
+            }).catch(function (err) {
+              setBusy(submitBtn, false);
+              alert('Could not save: ' + err.message);
+            });
+          });
           return;
         }
 
@@ -1849,8 +1900,10 @@
           fsAdd('academicSessions', {
             name: name, status: 'draft', createdAt: new Date().toISOString(),
             createdBy: document.getElementById('dashUserName').textContent || 'Administrator',
-            previousSessionId: active ? active.id : null
+            previousSessionId: active ? active.id : null,
+            terms: [] // reserved for Semester/Term-level filtering in the Result Center
           }).then(function () {
+            logAudit('Academic session created (draft)', { sessionName: name });
             alert('Draft session "' + name + '" created. Go to "Start New Session" when you\'re ready to review the transition.');
             renderAcademicSessions('transition');
           }).catch(function (err) {
@@ -1969,16 +2022,16 @@
       });
     }
 
-    function syncStudentAccountClass(seedRecord, newClassCode, newClassLabel) {
+    function syncStudentAccount(seedRecord, fields) {
       if (seedRecord.userUid) {
-        return fsUpdate('users', seedRecord.userUid, { classCode: newClassCode, classLabel: newClassLabel }).catch(function () { /* account doc may not exist */ });
+        return fsUpdate('users', seedRecord.userUid, fields).catch(function () { /* account doc may not exist */ });
       }
       // No known link yet — this student may have activated their
       // account before the link-back was recorded. Fall back to
       // looking their account up by matric number.
       return fsQueryEq('users', 'matric', seedRecord.matric).then(function (matches) {
         if (matches[0]) {
-          return fsUpdate('users', matches[0].id, { classCode: newClassCode, classLabel: newClassLabel });
+          return fsUpdate('users', matches[0].id, fields);
         }
       }).catch(function () { /* student likely hasn't activated an account yet — nothing to sync */ });
     }
@@ -1998,18 +2051,25 @@
           if (nextCode) {
             var nextLabel = classLabelFor(nextCode);
             writes.push(fsUpdate('students', s.id, { classCode: nextCode, classLabel: nextLabel, currentSessionId: draft.id, promotionDecision: null, sessionHistory: newHistory }));
-            writes.push(syncStudentAccountClass(s, nextCode, nextLabel));
+            writes.push(syncStudentAccount(s, { classCode: nextCode, classLabel: nextLabel }));
+            logAudit('Student promoted', { studentName: s.fullName, matric: s.matric, from: s.classLabel, to: nextLabel, session: draft.name });
           } else {
             // Already at the final class with no further class to move to — treat as graduating.
             writes.push(fsUpdate('students', s.id, { graduated: true, currentSessionId: draft.id, promotionDecision: null, sessionHistory: newHistory }));
+            writes.push(syncStudentAccount(s, { graduated: true }));
+            logAudit('Student graduated', { studentName: s.fullName, matric: s.matric, class: s.classLabel, session: draft.name, note: 'Reached final class while marked Promoted' });
           }
         } else if (decision === 'Graduated') {
           writes.push(fsUpdate('students', s.id, { graduated: true, currentSessionId: draft.id, promotionDecision: null, sessionHistory: newHistory }));
+          writes.push(syncStudentAccount(s, { graduated: true }));
+          logAudit('Student graduated', { studentName: s.fullName, matric: s.matric, class: s.classLabel, session: draft.name });
         } else if (decision === 'Repeat') {
           writes.push(fsUpdate('students', s.id, { currentSessionId: draft.id, promotionDecision: null, sessionHistory: newHistory }));
+          logAudit('Student repeated', { studentName: s.fullName, matric: s.matric, class: s.classLabel, session: draft.name });
         } else {
           // Undecided — kept unchanged in the same class, per instruction not to auto-promote.
           writes.push(fsUpdate('students', s.id, { currentSessionId: draft.id, sessionHistory: newHistory }));
+          logAudit('Student carried forward without decision', { studentName: s.fullName, matric: s.matric, class: s.classLabel, session: draft.name, note: 'No promotion decision was set — kept in current class' });
         }
       });
 
@@ -2032,12 +2092,173 @@
       writes.push(fsUpdate('academicSessions', draft.id, { status: 'active', startedAt: new Date().toISOString() }));
 
       Promise.all(writes).then(function () {
+        logAudit('Academic session started', {
+          newSession: draft.name, previousSession: active.name,
+          promoted: promoted.length, repeating: repeating.length,
+          graduated: graduating.length, undecided: undecided.length,
+          totalStudents: activeStudents.length
+        });
         alert('New academic session "' + draft.name + '" is now active. "' + active.name + '" has been archived.');
         adminCurrentSessionView = 'current';
         renderAcademicSessions('current');
       }).catch(function (err) {
         setBusy(btn, false);
         alert('The transition partially failed: ' + err.message + '\n\nPlease check the Current Session view carefully — some records may have updated and others may not have. Contact support before retrying.');
+      });
+    }
+
+    /* ================= STAFF ASSIGNMENTS (reassign Teachers / Class Teachers) ================= */
+
+    function renderStaffAssignments() {
+      var contentArea = document.getElementById('adminContentArea');
+      document.getElementById('dashSubtext').textContent = 'Only Admin can assign or change a Class Teacher or Teacher\'s classes and subjects.';
+      contentArea.innerHTML = '<div class="dash-card dash-card-wide" style="text-align:center; color:var(--ink-soft);">Loading…</div>';
+
+      fsGetAll('staffAccounts').then(function (allStaff) {
+        var teachingStaff = allStaff.filter(function (s) { return s.role === 'teacher' || s.role === 'classteacher'; });
+
+        if (teachingStaff.length === 0) {
+          contentArea.innerHTML = '<div class="ann-empty">No approved teachers or class teachers yet. Approve a staff request from the Overview tab first.</div>';
+          return;
+        }
+
+        var rows = teachingStaff.map(function (t) {
+          return '<tr data-staff-row="' + t.id + '">' +
+            '<td>' + escapeHtml(t.fullName) + '</td>' +
+            '<td>' + (t.role === 'classteacher' ? 'Class Teacher' : 'Teacher') + '</td>' +
+            '<td style="font-size:0.82rem;">' + ((t.classes || []).map(function (c) { return classLabelFor(c); }).join(', ') || '—') + '</td>' +
+            '<td style="font-size:0.82rem;">' + ((t.subjects || []).map(function (s) { return SUBJECT_LABELS[s] || s; }).join(', ') || '—') + '</td>' +
+            '<td><button class="btn btn-ghost" type="button" style="padding:6px 12px; font-size:0.78rem;" data-edit-staff="' + t.id + '">Reassign</button></td>' +
+          '</tr>';
+        }).join('');
+
+        contentArea.innerHTML =
+          '<div class="dash-card dash-card-wide">' +
+            '<h3>Teachers & Class Teachers</h3>' +
+            '<table class="dash-table" style="margin-top:12px;">' +
+              '<tr><th>Name</th><th>Role</th><th>Classes</th><th>Subjects</th><th>Action</th></tr>' +
+              rows +
+            '</table>' +
+          '</div>' +
+          '<div id="reassignFormWrap" style="margin-top:20px;"></div>';
+
+        contentArea.querySelectorAll('[data-edit-staff]').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            var t = teachingStaff.find(function (x) { return x.id === btn.getAttribute('data-edit-staff'); });
+            if (t) renderReassignForm(t);
+          });
+        });
+      }).catch(function () {
+        contentArea.innerHTML = '<div class="ann-empty">Could not load staff. Check your connection and refresh.</div>';
+      });
+    }
+
+    function renderReassignForm(t) {
+      var wrap = document.getElementById('reassignFormWrap');
+      var isClassTeacher = t.role === 'classteacher';
+      var currentClasses = t.classes || [];
+      var currentSubjects = t.subjects || [];
+
+      wrap.innerHTML =
+        '<div class="dash-card dash-card-wide">' +
+          '<h3>Reassign ' + escapeHtml(t.fullName) + '</h3>' +
+          '<p style="font-size:0.85rem; color:var(--ink-soft); margin:8px 0 16px;">' + t.fullName + ' cannot change this themself — only an Administrator can. Their dashboard updates automatically once saved.</p>' +
+          '<div class="field">' +
+            '<span>' + (isClassTeacher ? 'Class to manage (choose one)' : 'Classes taught (tick all that apply)') + '</span>' +
+            '<div class="tick-grid" id="reassignClassGrid">' +
+              ANN_CLASS_OPTIONS.map(function (c) {
+                var checked = currentClasses.indexOf(c[0]) > -1 ? ' checked' : '';
+                var inputType = isClassTeacher ? 'radio' : 'checkbox';
+                return '<label class="tick-item"><input type="' + inputType + '" name="reassignClass" value="' + c[0] + '"' + checked + '><span>' + c[1] + '</span></label>';
+              }).join('') +
+            '</div>' +
+          '</div>' +
+          (isClassTeacher ? '' :
+            '<div class="field" style="margin-top:16px;">' +
+              '<span>Subjects taught <small>(from the subjects available in ticked classes)</small></span>' +
+              '<div class="tick-grid" id="reassignSubjectGrid"></div>' +
+            '</div>'
+          ) +
+          '<div class="panel-actions">' +
+            '<button class="btn btn-ghost" type="button" id="cancelReassign">Cancel</button>' +
+            '<button class="btn btn-gold" type="button" id="saveReassign">Save Reassignment</button>' +
+          '</div>' +
+        '</div>';
+
+      function rebuildReassignSubjects() {
+        if (isClassTeacher) return;
+        var checkedClasses = Array.from(document.querySelectorAll('input[name="reassignClass"]:checked')).map(function (i) { return i.value; });
+        var subjectSet = {};
+        checkedClasses.forEach(function (code) { (CLASS_SUBJECTS[code] || []).forEach(function (subj) { subjectSet[subj] = true; }); });
+        var subjectGrid = document.getElementById('reassignSubjectGrid');
+        var subjects = Object.keys(subjectSet);
+        if (subjects.length === 0) {
+          subjectGrid.innerHTML = '<p class="field-hint">Tick a class above to see its subjects.</p>';
+          return;
+        }
+        subjectGrid.innerHTML = subjects.map(function (subj) {
+          var checked = currentSubjects.indexOf(subj) > -1 ? ' checked' : '';
+          return '<label class="tick-item"><input type="checkbox" name="reassignSubject" value="' + escapeHtml(subj) + '"' + checked + '><span>' + escapeHtml(SUBJECT_LABELS[subj] || subj) + '</span></label>';
+        }).join('');
+      }
+      rebuildReassignSubjects();
+
+      document.getElementById('reassignClassGrid').addEventListener('change', rebuildReassignSubjects);
+      document.getElementById('cancelReassign').addEventListener('click', function () { wrap.innerHTML = ''; });
+
+      document.getElementById('saveReassign').addEventListener('click', function () {
+        var newClasses = Array.from(document.querySelectorAll('input[name="reassignClass"]:checked')).map(function (i) { return i.value; });
+        var newSubjects = isClassTeacher ? [] : Array.from(document.querySelectorAll('input[name="reassignSubject"]:checked')).map(function (i) { return i.value; });
+
+        if (newClasses.length === 0) {
+          alert('Select at least one class.');
+          return;
+        }
+
+        var btn = document.getElementById('saveReassign');
+        setBusy(btn, true, 'Saving…');
+
+        var oldClassLabels = currentClasses.map(function (c) { return classLabelFor(c); }).join(', ') || '—';
+        var newClassLabels = newClasses.map(function (c) { return classLabelFor(c); }).join(', ');
+
+        // Only one active Class Teacher per class — if this class is
+        // being assigned as a Class Teacher, automatically remove it
+        // from whichever other class teacher previously held it.
+        if (isClassTeacher) {
+          fsGetAll('staffAccounts').then(function (allStaff) {
+            var displaced = allStaff.filter(function (other) {
+              return other.id !== t.id && other.role === 'classteacher' && (other.classes || []).some(function (c) { return newClasses.indexOf(c) > -1; });
+            });
+            var writes = [fsUpdate('staffAccounts', t.id, { classes: newClasses, subjects: newSubjects })];
+            displaced.forEach(function (other) {
+              var remaining = (other.classes || []).filter(function (c) { return newClasses.indexOf(c) === -1; });
+              writes.push(fsUpdate('staffAccounts', other.id, { classes: remaining }));
+            });
+
+            Promise.all(writes).then(function () {
+              logAudit('Class teacher reassigned', { staffName: t.fullName, role: t.role, from: oldClassLabels, to: newClassLabels });
+              displaced.forEach(function (other) {
+                logAudit('Class teacher displaced by reassignment', { staffName: other.fullName, removedClass: newClassLabels, reassignedTo: t.fullName });
+              });
+              var displacedNote = displaced.length ? ('\n\nNote: ' + displaced.map(function (d) { return d.fullName; }).join(', ') + ' automatically lost this class since only one Class Teacher can hold it at a time.') : '';
+              alert(t.fullName + '\'s assignment has been updated. Their dashboard will reflect this the next time they load it.' + displacedNote);
+              renderStaffAssignments();
+            }).catch(function (err) {
+              setBusy(btn, false);
+              alert('Could not save: ' + err.message);
+            });
+          });
+          return;
+        }
+
+        fsUpdate('staffAccounts', t.id, { classes: newClasses, subjects: newSubjects }).then(function () {
+          logAudit('Teacher reassigned', { staffName: t.fullName, role: t.role, from: oldClassLabels, to: newClassLabels });
+          alert(t.fullName + '\'s assignment has been updated. Their dashboard will reflect this the next time they load it.');
+          renderStaffAssignments();
+        }).catch(function (err) {
+          setBusy(btn, false);
+          alert('Could not save: ' + err.message);
+        });
       });
     }
   }
