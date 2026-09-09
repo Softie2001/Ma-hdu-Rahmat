@@ -94,6 +94,101 @@
     });
   }
 
+  // Atomic sequence allocation for permanent matric numbers.
+  // The sequence document is updated in a Firestore transaction so two
+  // applicants generating a matric number at the same time cannot receive
+  // the same number.
+  function allocateMatricNumber(year, section) {
+    return waitForDb().then(function () {
+      var fb = window.mripDb;
+      var sequenceId = String(year) + '_' + String(section).toUpperCase();
+      var sequenceRef = fb.doc(fb.db, 'matricSequences', sequenceId);
+
+      return fb.runTransaction(fb.db, function (transaction) {
+        return transaction.get(sequenceRef).then(function (snap) {
+          var nextNumber = 1;
+          if (snap.exists()) {
+            var current = Number(snap.data().lastNumber || 0);
+            nextNumber = current + 1;
+          }
+          transaction.set(sequenceRef, {
+            year: String(year),
+            section: String(section).toUpperCase(),
+            lastNumber: nextNumber,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+          return nextNumber;
+        });
+      }).then(function (nextNumber) {
+        return 'MDU/' + year + '/' + String(section).toUpperCase() + '/' + String(nextNumber).padStart(4, '0');
+      });
+    });
+  }
+
+  function generateMatricForApplicant(applicant) {
+    return waitForDb().then(function () {
+      var fb = window.mripDb;
+      var applicantRef = fb.doc(fb.db, 'applicants', applicant.id);
+      var year = String(applicant.matricYear || new Date().getFullYear().toString().slice(-2));
+      var section = String(applicant.matricSection || SECTION_MAP[applicant.classApplied] || 'IDD').toUpperCase();
+      var sequenceRef = fb.doc(fb.db, 'matricSequences', year + '_' + section);
+      var studentRef = fb.doc(fb.collection(fb.db, 'students'));
+
+      return fb.runTransaction(fb.db, function (transaction) {
+        return transaction.get(applicantRef).then(function (applicantSnap) {
+          if (!applicantSnap.exists()) throw new Error('Applicant record could not be found.');
+          var current = applicantSnap.data();
+
+          if (current.matric) return current.matric;
+
+          if (current.status !== 'Admission Approved' && current.admissionStatus !== 'Approved') {
+            throw new Error('Admission has not been approved yet.');
+          }
+
+          return transaction.get(sequenceRef).then(function (sequenceSnap) {
+            var nextNumber = sequenceSnap.exists()
+              ? Number(sequenceSnap.data().lastNumber || 0) + 1
+              : 1;
+            var matric = 'MDU/' + year + '/' + section + '/' + String(nextNumber).padStart(4, '0');
+
+            transaction.set(sequenceRef, {
+              year: year,
+              section: section,
+              lastNumber: nextNumber,
+              updatedAt: new Date().toISOString()
+            }, { merge: true });
+
+            transaction.set(studentRef, {
+              matric: matric,
+              fullName: current.fullName,
+              arabicName: current.arabicName || '',
+              email: current.email || '',
+              phone: current.phone || '',
+              classLabel: current.classLabel || '',
+              classCode: current.classApplied || '',
+              matricSection: section,
+              matricYear: year,
+              currentSessionId: null,
+              promotionDecision: null,
+              sessionHistory: [],
+              applicantUid: current.uid || applicant.id,
+              issuedAt: new Date().toISOString()
+            });
+
+            transaction.update(applicantRef, {
+              status: 'Matric Issued',
+              matric: matric,
+              matricIssuedAt: new Date().toISOString(),
+              studentRecordId: studentRef.id
+            });
+
+            return matric;
+          });
+        });
+      });
+    });
+  }
+
   var SECTION_MAP = { AwwalIdadi: 'IDD', ThaniIdadi: 'IDD', ThalithIdadi: 'IDD', RabiIdadi: 'IDD', ThanawiAwwal: 'THN', ThanawiThani: 'THN', ThanawiThalith: 'THN' };
 
   // Real subject curriculum per class level. The three Secondary years
@@ -651,14 +746,38 @@
       document.getElementById('dashWelcome').textContent = 'Welcome, ' + (profile.fullName || '').split(' ')[0];
 
       if (role === 'applicant') {
-        document.getElementById('dashSubtext').textContent = 'Track your application status below.';
-        var statusClass = profile.status === 'Verified' ? 'status-verified' : profile.status === 'Rejected' ? 'status-rejected' : 'status-pending';
-        var paymentSummaryBtn = profile.status === 'Verified'
+        document.getElementById('dashSubtext').textContent = 'Track your application, admission decision, and matriculation below.';
+
+        var statusClass = profile.status === 'Verified' || profile.status === 'Matric Issued'
+          ? 'status-verified'
+          : profile.status === 'Rejected'
+            ? 'status-rejected'
+            : 'status-pending';
+
+        var paymentSummaryBtn = profile.status === 'Verified' && profile.matric
           ? '<div class="dash-card dash-card-wide" style="text-align:center;"><button class="btn btn-gold" type="button" id="viewPaymentSummaryBtn">View / Print Payment Summary</button></div>'
           : '';
+
+        var matricSection = '';
+        if (profile.matric) {
+          matricSection =
+            '<div class="dash-card dash-card-wide">' +
+              '<h3>Permanent Matric Number</h3>' +
+              '<div class="dash-stat" style="font-size:1.35rem; letter-spacing:0.03em;">' + profile.matric + '</div>' +
+              '<p style="margin:8px 0 0; color:var(--ink-soft); font-size:0.86rem;">Keep this number safe. You will use it to activate and access your Student Portal.</p>' +
+            '</div>';
+        } else if (profile.status === 'Admission Approved' || profile.admissionStatus === 'Approved') {
+          matricSection =
+            '<div class="dash-card dash-card-wide notice notice-info">' +
+              '<h3 style="margin-top:0;">Generate Your Matric Number</h3>' +
+              '<p>Your admission has been approved. Generate your permanent matric number when you are ready. It will remain linked to your admission record.</p>' +
+              '<button class="btn btn-gold" type="button" id="generateMatricBtn">Generate Matric Number</button>' +
+            '</div>';
+        }
+
         dashGrid.innerHTML =
           '<div class="dash-card"><h3>Application Reference</h3><div class="dash-stat" style="font-size:1.15rem;">' + profile.ref + '</div></div>' +
-          '<div class="dash-card"><h3>Payment Status</h3><span class="status-badge ' + statusClass + '">' + profile.status + '</span></div>' +
+          '<div class="dash-card"><h3>Application Status</h3><span class="status-badge ' + statusClass + '">' + profile.status + '</span></div>' +
           '<div class="dash-card"><h3>Class Applied For</h3><div class="dash-stat" style="font-size:1.15rem;">' + profile.classLabel + '</div></div>' +
           '<div class="dash-card dash-card-wide">' +
             '<h3>Application Summary</h3>' +
@@ -670,10 +789,27 @@
               (profile.matric ? '<tr><th>Matric Number</th><td>' + profile.matric + '</td></tr>' : '') +
             '</table>' +
           '</div>' +
+          matricSection +
           paymentSummaryBtn +
           (profile.status === 'Pending Verification'
-            ? '<div class="dash-card dash-card-wide notice notice-info" style="margin:0;">Your admission fee payment is pending verification by the Bursar. Once approved, your permanent matric number will be issued.</div>'
+            ? '<div class="dash-card dash-card-wide notice notice-info" style="margin:0;">Your application is awaiting verification by the school. You will see the next available action here once your application is reviewed.</div>'
             : '');
+
+        var generateMatricBtn = document.getElementById('generateMatricBtn');
+        if (generateMatricBtn) {
+          generateMatricBtn.addEventListener('click', function () {
+            if (!window.confirm('Generate your permanent matric number now? This number will be permanent and cannot be changed later.')) return;
+            setBusy(generateMatricBtn, true, 'Generating…');
+
+            generateMatricForApplicant(profile).then(function (matric) {
+              alert('Your permanent matric number is: ' + matric + '\n\nYou can return to this Applicant Portal at any time to view it.');
+              window.location.reload();
+            }).catch(function (err) {
+              alert('Could not generate your matric number: ' + err.message);
+              setBusy(generateMatricBtn, false);
+            });
+          });
+        }
 
         var summaryBtn = document.getElementById('viewPaymentSummaryBtn');
         if (summaryBtn) {
@@ -936,7 +1072,7 @@
                 '<td>' + new Date(a.submittedAt).toLocaleDateString() + '</td>' +
                 '<td style="white-space:nowrap;">' +
                   '<button class="btn btn-ghost" style="padding:6px 12px; font-size:0.78rem;" data-view-app="' + a.id + '">View Details</button> ' +
-                  '<button class="btn btn-gold" style="padding:6px 12px; font-size:0.78rem;" data-approve-app="' + a.id + '">Approve & Issue Matric No.</button> ' +
+                  '<button class="btn btn-gold" style="padding:6px 12px; font-size:0.78rem;" data-approve-app="' + a.id + '">Approve Admission</button> ' +
                   '<button class="btn btn-ghost" style="padding:6px 12px; font-size:0.78rem;" data-reject-app="' + a.id + '">Reject</button>' +
                 '</td></tr>';
             }).join('')
@@ -1136,64 +1272,31 @@
             var id = btn.getAttribute('data-approve-app');
             var applicant = applicants.find(function (a) { return a.id === id; });
             if (!applicant) return;
+
+            if (!window.confirm('Approve admission for ' + applicant.fullName + '? The applicant will then be able to generate their permanent matric number.')) return;
+
             btn.disabled = true;
-            btn.textContent = 'Issuing…';
+            btn.textContent = 'Approving…';
 
-            // Matric number sequence increments independently per admission
-            // year and per section, and never changes once issued. Counted
-            // by matching the matric string prefix directly, so it works
-            // correctly regardless of how older/seed records were stored.
-            var prefix = 'MDU/' + applicant.matricYear + '/' + applicant.matricSection + '/';
-            Promise.all([fsGetAll('students'), fsGetAll('academicSessions')]).then(function (results) {
-              var allStudents = results[0];
-              var activeSession = getActiveSession(results[1]);
-              var sameSectionYear = allStudents.filter(function (s) { return (s.matric || '').indexOf(prefix) === 0; });
-              var seq = String(sameSectionYear.length + 1).padStart(4, '0');
-              var matric = prefix + seq;
-
-              return fsAdd('students', {
-                matric: matric,
-                fullName: applicant.fullName,
-                classLabel: applicant.classLabel,
-                classCode: applicant.classApplied,
-                matricSection: applicant.matricSection,
-                matricYear: applicant.matricYear,
-                currentSessionId: activeSession ? activeSession.id : null,
-                promotionDecision: null,
-                sessionHistory: [],
-                issuedAt: new Date().toISOString()
-              }).then(function () {
-                return fsUpdate('applicants', id, { status: 'Verified', matric: matric, verifiedAt: new Date().toISOString() });
-              }).then(function () {
-                return fsAdd('payments', {
-                  studentMatric: matric,
-                  studentName: applicant.fullName,
-                  classLabel: applicant.classLabel,
-                  paymentType: 'Admission Fee',
-                  description: 'Non-refundable admission fee',
-                  amount: 10000,
-                  currency: 'NGN',
-                  paymentDate: applicant.submittedAt,
-                  admissionDate: new Date().toISOString(),
-                  reference: applicant.ref,
-                  recordedBy: 'System (Admission Approval)',
-                  recordedAt: new Date().toISOString()
-                });
-              }).then(function () {
-                alert(
-                  applicant.fullName + ' has been approved.\n\n' +
-                  'Matric Number: ' + matric + '\n\n' +
-                  'Share this with the applicant so they can activate their Student account on the Register page (no email service is connected yet, so this is not sent automatically).'
-                );
-                renderAdminDashboard();
-              });
+            var approvedAt = new Date().toISOString();
+            fsUpdate('applicants', id, {
+              status: 'Admission Approved',
+              admissionStatus: 'Approved',
+              approvedAt: approvedAt
+            }).then(function () {
+              alert(
+                applicant.fullName + ' has been approved for admission.\n\n' +
+                'The applicant can now log in to their Applicant Portal and use the Generate Matric Number section.'
+              );
+              renderAdminDashboard();
             }).catch(function (err) {
               alert('Could not approve this applicant: ' + err.message);
               btn.disabled = false;
-              btn.textContent = 'Approve & Issue Matric No.';
+              btn.textContent = 'Approve Admission';
             });
           });
         });
+
         contentArea.querySelectorAll('[data-reject-app]').forEach(function (btn) {
           btn.addEventListener('click', function () {
             var id = btn.getAttribute('data-reject-app');
