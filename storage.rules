@@ -1,0 +1,21 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function isBursar() {
+      return signedIn() && firestore.exists(/databases/(default)/documents/staffAccounts/$(request.auth.uid))
+        && firestore.get(/databases/(default)/documents/staffAccounts/$(request.auth.uid)).data.role == 'bursar';
+    }
+    function isAdmin() {
+      return signedIn() && firestore.exists(/databases/(default)/documents/config/admin)
+        && firestore.get(/databases/(default)/documents/config/admin).data.uid == request.auth.uid;
+    }
+    match /applicantReceipts/{uid}/{fileName} {
+      allow create: if signedIn() && request.auth.uid == uid
+        && request.resource.size < 10 * 1024 * 1024
+        && request.resource.contentType.matches('application/pdf|image/(jpeg|png|webp)');
+      allow get: if signedIn() && (request.auth.uid == uid || isBursar() || isAdmin());
+      allow update, delete, list: if false;
+    }
+  }
+}

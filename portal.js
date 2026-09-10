@@ -33,7 +33,7 @@
   }
 
   function genRef() {
-    return 'MRIP-APP-' + Math.random().toString(36).slice(2, 8).toUpperCase();
+    return 'MDU-APP-' + Math.random().toString(36).slice(2, 8).toUpperCase();
   }
   function genTempPassword() {
     return 'Mrip-' + Math.random().toString(36).slice(2, 8) + Math.floor(Math.random() * 100);
@@ -91,6 +91,69 @@
     return waitForDb().then(function () {
       var fb = window.mripDb;
       return fb.deleteDoc(fb.doc(fb.db, colName, docId));
+    });
+  }
+
+  function uploadApplicantReceipt(uid, file) {
+    var allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+    if (!file || !file.size) return Promise.reject(new Error('A payment receipt is required.'));
+    if (file.size > 10 * 1024 * 1024) return Promise.reject(new Error('The receipt must be 10 MB or smaller.'));
+    if (allowedTypes.indexOf(file.type) === -1) return Promise.reject(new Error('Upload a PDF, JPG, PNG, or WEBP receipt.'));
+    return waitForDb().then(function () {
+      var fb = window.mripDb;
+      var extension = (file.name.split('.').pop() || 'file').toLowerCase().replace(/[^a-z0-9]/g, '');
+      var path = 'applicantReceipts/' + uid + '/' + Date.now() + '.' + extension;
+      var ref = fb.storageRef(fb.storage, path);
+      return fb.uploadBytes(ref, file, { contentType: file.type }).then(function () {
+        return { path: path, name: file.name, contentType: file.type, size: file.size };
+      });
+    });
+  }
+
+  function isFinanceCleared(applicant) {
+    return applicant.applicationFeeStatus === 'Payment Verified' ||
+      applicant.applicationFeeStatus === 'Fee Exempt' ||
+      applicant.status === 'Verified'; // compatibility with existing reviewed records
+  }
+
+  function reviewApplicantFinance(applicant, decision, reviewer, note) {
+    return waitForDb().then(function () {
+      var fb = window.mripDb;
+      var applicantRef = fb.doc(fb.db, 'applicants', applicant.id);
+      var paymentRef = fb.doc(fb.collection(fb.db, 'payments'));
+      var now = new Date().toISOString();
+      return fb.runTransaction(fb.db, function (transaction) {
+        return transaction.get(applicantRef).then(function (snap) {
+          if (!snap.exists()) throw new Error('The applicant record no longer exists.');
+          var current = snap.data();
+          if (isFinanceCleared(current)) throw new Error('This finance review has already been completed.');
+          var update = {
+            applicationFeeStatus: decision === 'verify' ? 'Payment Verified' : decision === 'exempt' ? 'Fee Exempt' : 'Payment Rejected',
+            financeReviewedAt: now,
+            financeReviewedBy: reviewer,
+            financeReviewNote: note || ''
+          };
+          transaction.update(applicantRef, update);
+          if (decision === 'verify') {
+            transaction.set(paymentRef, {
+              applicantId: applicant.id,
+              studentMatric: '',
+              studentName: applicant.fullName,
+              classLabel: applicant.classLabel || '',
+              paymentType: 'Application Fee',
+              description: 'Verified application fee',
+              amount: 10000,
+              currency: 'NGN',
+              paymentDate: applicant.submittedAt || now,
+              reference: applicant.paymentReference || applicant.ref || '',
+              status: 'Verified',
+              receiptPath: applicant.paymentEvidence && applicant.paymentEvidence.path || '',
+              recordedBy: reviewer,
+              recordedAt: now
+            });
+          }
+        });
+      });
     });
   }
 
@@ -381,6 +444,23 @@
       });
     });
 
+    var feeRouteChoices = applyForm.querySelectorAll('input[name="feeRoute"]');
+    var paymentEvidenceFields = document.getElementById('paymentEvidenceFields');
+    var exemptionReasonField = document.getElementById('exemptionReasonField');
+    var receiptInput = applyForm.querySelector('input[name="receipt"]');
+    var exemptionReasonInput = applyForm.querySelector('textarea[name="exemptionReason"]');
+    function applyFeeRoute(route) {
+      var isExemption = route === 'exemption';
+      paymentEvidenceFields.style.display = isExemption ? 'none' : '';
+      exemptionReasonField.style.display = isExemption ? '' : 'none';
+      receiptInput.required = !isExemption;
+      exemptionReasonInput.required = isExemption;
+    }
+    feeRouteChoices.forEach(function (choice) {
+      choice.addEventListener('change', function () { applyFeeRoute(choice.value); });
+    });
+    applyFeeRoute('payment');
+
     function buildReview() {
       var grid = document.getElementById('reviewGrid');
       var fd = new FormData(applyForm);
@@ -414,16 +494,22 @@
       var fd = new FormData(applyForm);
       var classSelect = document.getElementById('classApplied');
       var selectedOption = classSelect.options[classSelect.selectedIndex];
-      var section = selectedOption ? selectedOption.getAttribute('data-section') : 'TDR';
+      var section = selectedOption ? selectedOption.getAttribute('data-section') : 'IDD';
       var year = new Date().getFullYear();
       var email = fd.get('email').trim();
       var password = fd.get('password');
+      var feeRoute = fd.get('feeRoute');
+      var receiptFile = fd.get('receipt');
 
       waitForDb().then(function () {
         var fa = window.mripAuth;
         return fa.createUserWithEmailAndPassword(fa.auth, email, password);
       }).then(function (cred) {
         var uid = cred.user.uid;
+        var paymentEvidence = feeRoute === 'payment'
+          ? uploadApplicantReceipt(uid, receiptFile)
+          : Promise.resolve(null);
+        return paymentEvidence.then(function (evidence) {
         var record = {
           uid: uid,
           ref: genRef(),
@@ -443,9 +529,16 @@
           matricSection: section,
           matricYear: String(year).slice(-2),
           status: 'Pending Verification',
+          applicationFeeStatus: feeRoute === 'payment' ? 'Payment Submitted' : 'Fee Exemption Requested',
+          paymentEvidence: evidence,
+          paymentReference: feeRoute === 'payment' ? (fd.get('txRef') || '').trim() : '',
+          exemptionReason: feeRoute === 'exemption' ? (fd.get('exemptionReason') || '').trim() : '',
+          financeReviewedAt: null,
+          financeReviewedBy: null,
           submittedAt: new Date().toISOString()
         };
         return fsSetDoc('applicants', uid, record).then(function () { return record; });
+        });
       }).then(function (record) {
         document.getElementById('successRef').textContent = 'Reference: ' + record.ref;
         panelEls.forEach(function (p) { p.classList.remove('is-active'); });
@@ -754,7 +847,7 @@
             ? 'status-rejected'
             : 'status-pending';
 
-        var paymentSummaryBtn = profile.status === 'Verified' && profile.matric
+        var paymentSummaryBtn = profile.applicationFeeStatus === 'Payment Verified'
           ? '<div class="dash-card dash-card-wide" style="text-align:center;"><button class="btn btn-gold" type="button" id="viewPaymentSummaryBtn">View / Print Payment Summary</button></div>'
           : '';
 
@@ -778,6 +871,7 @@
         dashGrid.innerHTML =
           '<div class="dash-card"><h3>Application Reference</h3><div class="dash-stat" style="font-size:1.15rem;">' + profile.ref + '</div></div>' +
           '<div class="dash-card"><h3>Application Status</h3><span class="status-badge ' + statusClass + '">' + profile.status + '</span></div>' +
+          '<div class="dash-card"><h3>Application Fee</h3><span class="status-badge ' + (isFinanceCleared(profile) ? 'status-verified' : profile.applicationFeeStatus === 'Payment Rejected' ? 'status-rejected' : 'status-pending') + '">' + (profile.applicationFeeStatus || 'Review required') + '</span></div>' +
           '<div class="dash-card"><h3>Class Applied For</h3><div class="dash-stat" style="font-size:1.15rem;">' + profile.classLabel + '</div></div>' +
           '<div class="dash-card dash-card-wide">' +
             '<h3>Application Summary</h3>' +
@@ -792,7 +886,7 @@
           matricSection +
           paymentSummaryBtn +
           (profile.status === 'Pending Verification'
-            ? '<div class="dash-card dash-card-wide notice notice-info" style="margin:0;">Your application is awaiting verification by the school. You will see the next available action here once your application is reviewed.</div>'
+            ? '<div class="dash-card dash-card-wide notice notice-info" style="margin:0;">Your application is awaiting review. The Bursar must first verify payment or approve an exemption; the Administrator can then review admission.</div>'
             : '');
 
         var generateMatricBtn = document.getElementById('generateMatricBtn');
@@ -882,9 +976,7 @@
         renderAdminDashboard();
 
       } else if (role === 'bursar') {
-        document.getElementById('dashSubtext').textContent = 'Bursar Portal — payment tools appear here as they\'re connected.';
-        dashGrid.innerHTML =
-          '<div class="dash-card dash-card-wide notice notice-info" style="margin:0;">Payment verification and the searchable payment register will appear here once connected.</div>';
+        renderBursarDashboard(profile);
 
       } else if (role === 'examofficer') {
         document.getElementById('dashSubtext').textContent = 'Examination Officer Portal — classes you oversee for results and promotion decisions.';
@@ -899,6 +991,70 @@
           '<div class="dash-card"><h3>Assigned Classes</h3><div class="dash-stat" style="font-size:1rem;">' + ((profile.classes || []).map(function (c) { return CLASS_LABELS[c] || c; }).join(', ') || '—') + '</div></div>' +
           '<div class="dash-card dash-card-wide notice notice-info" style="margin:0;">Attendance, results entry, and class rosters will appear here once connected to the school\'s academic records system.</div>';
       }
+    }
+
+    function renderBursarDashboard(profile) {
+      document.getElementById('dashSubtext').textContent = 'Review application-fee evidence and fee-exemption requests.';
+      dashGrid.innerHTML = '<div class="dash-card dash-card-wide" style="text-align:center; color:var(--ink-soft);">Loading finance review queue…</div>';
+      fsGetAll('applicants').then(function (applicants) {
+        var queue = applicants.filter(function (a) {
+          return a.applicationFeeStatus === 'Payment Submitted' || a.applicationFeeStatus === 'Fee Exemption Requested';
+        }).sort(function (a, b) { return new Date(a.submittedAt) - new Date(b.submittedAt); });
+        var rows = queue.length ? queue.map(function (a) {
+          var isExemption = a.applicationFeeStatus === 'Fee Exemption Requested';
+          var evidence = !isExemption && a.paymentEvidence && a.paymentEvidence.path
+            ? '<button class="btn btn-ghost" style="padding:4px 8px; font-size:0.76rem;" data-open-receipt="' + a.id + '">Open receipt</button>'
+            : isExemption ? 'Exemption request' : 'Receipt unavailable';
+          return '<tr><td>' + escapeHtml(a.fullName) + '</td><td>' + escapeHtml(a.ref || '—') + '</td><td>' + escapeHtml(a.applicationFeeStatus) + '</td><td>' + evidence + '</td><td>' + new Date(a.submittedAt).toLocaleDateString() + '</td><td style="white-space:nowrap;">' +
+            (isExemption
+              ? '<button class="btn btn-gold" data-finance-action="exempt" data-applicant-id="' + a.id + '">Approve Exemption</button> '
+              : '<button class="btn btn-gold" data-finance-action="verify" data-applicant-id="' + a.id + '">Verify Payment</button> ') +
+            '<button class="btn btn-ghost" data-finance-action="reject" data-applicant-id="' + a.id + '">Reject</button></td></tr>';
+        }).join('') : '<tr><td colspan="6" style="text-align:center; color:var(--ink-soft);">No finance items are awaiting review.</td></tr>';
+        dashGrid.innerHTML =
+          '<div class="dash-card"><h3>Awaiting Review</h3><div class="dash-stat">' + queue.length + '</div><div class="dash-stat-label">Payment evidence or exemption requests</div></div>' +
+          '<div class="dash-card dash-card-wide"><h3>Application Fee Review</h3><p style="font-size:0.85rem; color:var(--ink-soft); margin-bottom:16px;">Verify transfer evidence or approve a documented exemption. Admission approval remains an Administrator action.</p><table class="dash-table"><tr><th>Applicant</th><th>Reference</th><th>Request</th><th>Evidence</th><th>Submitted</th><th>Action</th></tr>' + rows + '</table></div>';
+        dashGrid.querySelectorAll('[data-finance-action]').forEach(function (button) {
+          button.addEventListener('click', function () {
+            var applicant = queue.find(function (a) { return a.id === button.getAttribute('data-applicant-id'); });
+            var decision = button.getAttribute('data-finance-action');
+            if (!applicant) return;
+            var note = '';
+            if (decision === 'reject') {
+              note = window.prompt('State the reason for rejecting this payment or exemption request. This will be visible to the applicant.');
+              if (note === null || !note.trim()) return;
+            }
+            var label = decision === 'verify' ? 'Verify this payment' : decision === 'exempt' ? 'Approve this exemption' : 'Reject this request';
+            if (!window.confirm(label + ' for ' + applicant.fullName + '?')) return;
+            setBusy(button, true, 'Saving…');
+            reviewApplicantFinance(applicant, decision, profile.fullName || 'Bursar', note).then(function () {
+              renderBursarDashboard(profile);
+            }).catch(function (err) {
+              alert('Could not complete the finance review: ' + err.message);
+              setBusy(button, false);
+            });
+          });
+        });
+        dashGrid.querySelectorAll('[data-open-receipt]').forEach(function (button) {
+          button.addEventListener('click', function () {
+            var applicant = queue.find(function (a) { return a.id === button.getAttribute('data-open-receipt'); });
+            if (!applicant || !applicant.paymentEvidence || !applicant.paymentEvidence.path) return;
+            var popup = window.open('', '_blank', 'noopener');
+            waitForDb().then(function () {
+              var fb = window.mripDb;
+              return fb.getDownloadURL(fb.storageRef(fb.storage, applicant.paymentEvidence.path));
+            }).then(function (url) {
+              if (popup) popup.location = url;
+              else window.location.href = url;
+            }).catch(function (err) {
+              if (popup) popup.close();
+              alert('Could not open the payment receipt: ' + err.message);
+            });
+          });
+        });
+      }).catch(function () {
+        dashGrid.innerHTML = '<div class="dash-card dash-card-wide notice notice-error" style="margin:0;">Could not load the finance review queue. Check your access and connection.</div>';
+      });
     }
 
     function showPaymentReceipt(record) {
@@ -1034,6 +1190,9 @@
         var applicants = results[1];
         var pending = requests.filter(function (r) { return r.status === 'Pending Approval'; });
         var pendingApplicants = applicants.filter(function (a) { return a.status === 'Pending Verification'; });
+        var financeQueue = pendingApplicants.filter(function (a) {
+          return a.applicationFeeStatus === 'Payment Submitted' || a.applicationFeeStatus === 'Fee Exemption Requested';
+        });
 
         document.getElementById('dashSubtext').textContent = pending.length
           ? 'You have ' + pending.length + ' access request' + (pending.length === 1 ? '' : 's') + ' waiting for review.'
@@ -1065,53 +1224,33 @@
 
         var appRows = pendingApplicants.length
           ? pendingApplicants.map(function (a) {
+              var financeCleared = isFinanceCleared(a);
               return '<tr data-app-id="' + a.id + '">' +
                 '<td>' + a.fullName + '</td>' +
                 '<td>' + a.email + '</td>' +
                 '<td>' + a.classLabel + '</td>' +
+                '<td>' + (a.applicationFeeStatus || 'Legacy record — review required') + '</td>' +
                 '<td>' + new Date(a.submittedAt).toLocaleDateString() + '</td>' +
                 '<td style="white-space:nowrap;">' +
                   '<button class="btn btn-ghost" style="padding:6px 12px; font-size:0.78rem;" data-view-app="' + a.id + '">View Details</button> ' +
-                  '<button class="btn btn-gold" style="padding:6px 12px; font-size:0.78rem;" data-approve-app="' + a.id + '">Approve Admission</button> ' +
+                  (financeCleared
+                    ? '<button class="btn btn-gold" style="padding:6px 12px; font-size:0.78rem;" data-approve-app="' + a.id + '">Approve Admission</button> '
+                    : '<span style="font-size:0.78rem; color:var(--ink-soft);">Awaiting Bursar review</span> ') +
                   '<button class="btn btn-ghost" style="padding:6px 12px; font-size:0.78rem;" data-reject-app="' + a.id + '">Reject</button>' +
                 '</td></tr>';
             }).join('')
-          : '<tr><td colspan="5" style="text-align:center; color:var(--ink-soft);">No pending applicants.</td></tr>';
+          : '<tr><td colspan="6" style="text-align:center; color:var(--ink-soft);">No pending applicants.</td></tr>';
 
         contentArea.innerHTML = '<div class="dash-grid">' +
           '<div class="dash-card"><h3>Pending Access Requests' + notifBadge + '</h3><div class="dash-stat">' + pending.length + '</div><div class="dash-stat-label">Awaiting your review</div></div>' +
-          '<div class="dash-card"><h3>Pending Admission Payments</h3><div class="dash-stat">' + pendingApplicants.length + '</div><div class="dash-stat-label">Awaiting verification</div></div>' +
+          '<div class="dash-card"><h3>Finance Reviews Pending</h3><div class="dash-stat">' + financeQueue.length + '</div><div class="dash-stat-label">Assigned to the Bursar</div></div>' +
           '<div class="dash-card"><h3>Total Applicants</h3><div class="dash-stat">' + applicants.length + '</div><div class="dash-stat-label">All time</div></div>' +
           '<div class="dash-card dash-card-wide">' +
             '<h3>Pending Applicants</h3>' +
             '<table class="dash-table" id="appTable">' +
-              '<tr><th>Name</th><th>Email</th><th>Class Applied</th><th>Submitted</th><th>Action</th></tr>' +
+              '<tr><th>Name</th><th>Email</th><th>Class Applied</th><th>Finance Status</th><th>Submitted</th><th>Action</th></tr>' +
               appRows +
             '</table>' +
-          '</div>' +
-          '<div class="dash-card dash-card-wide">' +
-            '<h3>Record a Payment</h3>' +
-            '<p style="font-size:0.85rem; color:var(--ink-soft); margin-bottom:16px;">Log a payment against a student\'s matric number — school fees, examination fees, graduation fees, certificate fees, or any other payment.</p>' +
-            '<form id="recordPaymentForm">' +
-              '<div class="field-row two-col">' +
-                '<label class="field"><span>Student Matric Number <em>*</em></span><input type="text" name="matric" placeholder="e.g. MDU/26/IDD/0001" required><small class="field-error" id="payMatricError"></small></label>' +
-                '<label class="field"><span>Payment Type <em>*</em></span><select name="paymentType" required>' +
-                  '<option value="">Select type</option>' +
-                  '<option value="School Fee">School Fee</option>' +
-                  '<option value="Examination Fee">Examination Fee</option>' +
-                  '<option value="Graduation Fee">Graduation Fee</option>' +
-                  '<option value="Certificate Fee">Certificate Fee</option>' +
-                  '<option value="Other">Other</option>' +
-                '</select></label>' +
-              '</div>' +
-              '<div class="field-row two-col" style="margin-top:16px;">' +
-                '<label class="field"><span>Amount (₦) <em>*</em></span><input type="number" name="amount" min="0" step="1" required></label>' +
-                '<label class="field"><span>Payment Date <em>*</em></span><input type="date" name="paymentDate" required></label>' +
-              '</div>' +
-              '<label class="field" style="margin-top:16px;"><span>Description <small>(optional)</small></span><input type="text" name="description" placeholder="e.g. Second term school fees"></label>' +
-              '<label class="field" style="margin-top:16px;"><span>Transaction Reference <small>(optional)</small></span><input type="text" name="reference"></label>' +
-              '<button type="submit" class="btn btn-gold" style="margin-top:16px;">Record Payment</button>' +
-            '</form>' +
           '</div>' +
           '<div class="dash-card dash-card-wide">' +
             '<h3>Staff Access Requests</h3>' +
@@ -1121,56 +1260,6 @@
             '</table>' +
           '</div>' +
           '</div>';
-
-        var recordPaymentForm = document.getElementById('recordPaymentForm');
-        if (recordPaymentForm) {
-          recordPaymentForm.addEventListener('submit', function (e) {
-            e.preventDefault();
-            var fd = new FormData(recordPaymentForm);
-            var matric = (fd.get('matric') || '').trim().toUpperCase();
-            var paymentType = fd.get('paymentType');
-            var amount = Number(fd.get('amount'));
-            var paymentDate = fd.get('paymentDate');
-            var description = fd.get('description') || '';
-            var reference = fd.get('reference') || '';
-            var matricError = document.getElementById('payMatricError');
-            matricError.textContent = '';
-
-            if (!matric) { matricError.textContent = 'Matric number is required.'; return; }
-
-            var submitBtn = recordPaymentForm.querySelector('button[type="submit"]');
-            setBusy(submitBtn, true, 'Looking up student…');
-
-            fsQueryEq('students', 'matric', matric).then(function (matches) {
-              var student = matches[0];
-              if (!student) {
-                setBusy(submitBtn, false);
-                matricError.textContent = 'No student found with that matric number.';
-                return;
-              }
-              return fsAdd('payments', {
-                studentMatric: matric,
-                studentName: student.fullName,
-                classLabel: student.classLabel,
-                paymentType: paymentType,
-                description: description || paymentType,
-                amount: amount,
-                currency: 'NGN',
-                paymentDate: new Date(paymentDate).toISOString(),
-                reference: reference,
-                recordedBy: 'Administrator',
-                recordedAt: new Date().toISOString()
-              }).then(function () {
-                alert('Payment recorded for ' + student.fullName + ' (' + matric + ').');
-                recordPaymentForm.reset();
-                setBusy(submitBtn, false);
-              });
-            }).catch(function (err) {
-              setBusy(submitBtn, false);
-              alert('Could not record payment: ' + err.message);
-            });
-          });
-        }
 
         contentArea.querySelectorAll('[data-view-req]').forEach(function (btn) {
           btn.addEventListener('click', function () {
@@ -1210,6 +1299,10 @@
               ['Class Applying For', a.classLabel],
               ['Previously Enrolled?', a.existingStudent === 'yes' ? 'Yes' : 'No'],
               ['Application Reference', a.ref],
+              ['Application Fee Status', a.applicationFeeStatus || 'Legacy record — review required'],
+              ['Payment Reference', a.paymentReference || '—'],
+              ['Exemption Reason', a.exemptionReason || '—'],
+              ['Finance Review Note', a.financeReviewNote || '—'],
               ['Submitted', new Date(a.submittedAt).toLocaleString()],
               ['Status', a.status]
             ]);
@@ -1279,6 +1372,12 @@
             btn.textContent = 'Approving…';
 
             var approvedAt = new Date().toISOString();
+            if (!isFinanceCleared(applicant)) {
+              alert('Admission cannot be approved until the Bursar verifies payment or approves a fee exemption.');
+              btn.disabled = false;
+              btn.textContent = 'Approve Admission';
+              return;
+            }
             fsUpdate('applicants', id, {
               status: 'Admission Approved',
               admissionStatus: 'Approved',

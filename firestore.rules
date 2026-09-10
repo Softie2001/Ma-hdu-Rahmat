@@ -1,0 +1,94 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function isAdmin() {
+      return signedIn() && exists(/databases/$(database)/documents/config/admin)
+        && get(/databases/$(database)/documents/config/admin).data.uid == request.auth.uid;
+    }
+    function isBursar() {
+      return signedIn() && exists(/databases/$(database)/documents/staffAccounts/$(request.auth.uid))
+        && get(/databases/$(database)/documents/staffAccounts/$(request.auth.uid)).data.role == 'bursar';
+    }
+    function isOwner(uid) { return signedIn() && request.auth.uid == uid; }
+
+    match /config/admin {
+      allow get: if signedIn();
+      // Bootstrap is intentionally limited to the first account. Deploy this rule
+      // before allowing public registration, then remove the bootstrap path after setup.
+      allow create: if signedIn() && !exists(/databases/$(database)/documents/config/admin)
+        && request.resource.data.uid == request.auth.uid;
+      allow update, delete: if isAdmin();
+    }
+
+    match /applicants/{uid} {
+      allow create: if isOwner(uid);
+      allow get: if isOwner(uid) || isAdmin() || isBursar();
+      allow list: if isAdmin() || isBursar();
+      allow update: if isAdmin() || isBursar()
+        || (isOwner(uid) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['matric', 'matricIssuedAt', 'studentRecordId', 'status']));
+      allow delete: if isAdmin();
+    }
+
+    match /matricSequences/{sequence} {
+      // Applicant-issued matric numbers remain supported, but only for an admitted applicant.
+      allow get: if signedIn();
+      allow create, update: if signedIn() && (
+        isAdmin() || exists(/databases/$(database)/documents/applicants/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/applicants/$(request.auth.uid)).data.admissionStatus == 'Approved'
+      );
+      allow delete: if false;
+    }
+
+    match /students/{studentId} {
+      allow get, list: if isAdmin() || isBursar();
+      allow create: if signedIn() && request.resource.data.applicantUid == request.auth.uid;
+      allow update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /payments/{paymentId} {
+      allow get, list, create, update: if isBursar() || isAdmin();
+      allow delete: if false;
+    }
+
+    match /users/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid);
+      allow update: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /staffAccounts/{uid} {
+      allow get: if isOwner(uid) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /staffRequests/{requestId} {
+      allow create: if signedIn();
+      allow get, list, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /academicSessions/{id} {
+      allow get, list: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+
+    match /announcements/{id} {
+      allow get, list: if signedIn();
+      allow create, update: if isAdmin();
+      allow delete: if false;
+    }
+    match /announcementReads/{id} {
+      allow create: if signedIn() && request.resource.data.userId == request.auth.uid;
+      allow get, list: if signedIn();
+      allow update, delete: if false;
+    }
+    match /{document=**} { allow read, write: if false; }
+  }
+}

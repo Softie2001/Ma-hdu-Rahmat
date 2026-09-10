@@ -27,6 +27,12 @@ import {
   onAuthStateChanged,
   deleteUser
 } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {
+  getStorage,
+  ref as storageRef,
+  uploadBytes,
+  getDownloadURL
+} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
 
 const firebaseConfig = {
   apiKey: "AIzaSyA4bQlqVH05pBwTl72I-mbOTgtjjKtqUxk",
@@ -41,6 +47,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
 const auth = getAuth(app);
+const storage = getStorage(app);
 
 // --- Secondary app: used ONLY when an Administrator approves a staff
 // request and needs to create that staff member's account. Using a
@@ -53,7 +60,8 @@ const secondaryAuth = getAuth(secondaryApp);
 window.mripDb = {
   db,
   collection, doc, getDoc, getDocs, setDoc, addDoc, updateDoc, deleteDoc, query, where,
-  runTransaction
+  runTransaction,
+  storage, storageRef, uploadBytes, getDownloadURL
 };
 
 window.mripAuth = {

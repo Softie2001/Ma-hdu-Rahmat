@@ -265,7 +265,7 @@
       <section class="portal-panel apply-panel" data-panel="5">
         <div class="panel-head">
           <h1>Review & admission fee</h1>
-          <p>Confirm your details, then complete the non-refundable admission fee to submit your application.</p>
+          <p>Confirm your details, then submit payment evidence or request a documented fee exemption for review.</p>
         </div>
 
         <div class="review-grid" id="reviewGrid"></div>
@@ -273,10 +273,18 @@
         <div class="notice notice-gold" style="margin-top:24px;">
           <strong>Admission Fee — ₦10,000 (non-refundable)</strong>
           <p>Bank Name: <strong>First Option Bank</strong> · Account Name: <strong>Ma'hdu Rahmat Islamiyy Institute</strong> · Account Number: <strong>0123456789</strong></p>
-          <p>Transfer the fee, then upload proof of payment below. Only bank transfer is accepted.</p>
+          <p>Transfer the fee and upload proof below. If an approved exemption may apply, submit an exemption request instead; the school will review it before admission can proceed.</p>
         </div>
 
-        <div class="field-row two-col">
+        <div class="field" style="margin-top:20px;">
+          <span>Application Fee Route <em>*</em></span>
+          <div class="tick-grid" id="feeRouteChoices">
+            <label class="tick-item"><input type="radio" name="feeRoute" value="payment" checked><span>I have paid and will submit payment evidence</span></label>
+            <label class="tick-item"><input type="radio" name="feeRoute" value="exemption"><span>I am requesting a fee exemption for school review</span></label>
+          </div>
+        </div>
+
+        <div class="field-row two-col" id="paymentEvidenceFields">
           <label class="field">
             <span>Transaction Reference</span>
             <input type="text" name="txRef" placeholder="e.g. FBN-2607-XXXX">
@@ -287,6 +295,12 @@
             <small class="field-error"></small>
           </label>
         </div>
+
+        <label class="field" id="exemptionReasonField" style="display:none; margin-top:16px;">
+          <span>Reason for exemption request <em>*</em></span>
+          <textarea name="exemptionReason" rows="3" maxlength="1000" placeholder="State the basis for this request. The school may request supporting information."></textarea>
+          <small class="field-error"></small>
+        </label>
 
         <label class="checkbox-row">
           <input type="checkbox" name="agree" required>
@@ -306,7 +320,7 @@
       <div class="success-block">
         <div class="success-icon">✓</div>
         <h1>Application submitted</h1>
-        <p>Your application has been received and your admission fee payment is <strong>pending verification</strong>. You'll be notified by email once it has been reviewed.</p>
+        <p>Your application has been received. Its payment evidence or exemption request is <strong>pending school review</strong>. You'll be notified once it has been reviewed.</p>
         <div class="success-ref" id="successRef"></div>
         <div class="panel-actions" style="justify-content:center;">
           <a href="login.html" class="btn btn-gold">Go to Login</a>
