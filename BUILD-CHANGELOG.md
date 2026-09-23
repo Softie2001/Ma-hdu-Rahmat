@@ -13,3 +13,7 @@
 
 ## Important
 This is an incremental workflow foundation. Application-fee payment verification/exemption and full Bursar finance separation are not silently fabricated here; those remain the next finance workflow work.
+
+- Connected the browser configuration to the user's Supabase project `ppykmtroiyihoxwxqecn`.
+- Kept the Supabase publishable key only; no secret/service-role key was added.
+- Firebase has NOT been deleted or retired yet.
