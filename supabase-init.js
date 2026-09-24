@@ -7,9 +7,12 @@
 // No Firebase SDK is loaded here.
 // ============================================================
 
-import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
-
+const createClient = window.supabase && window.supabase.createClient;
 const cfg = window.MAHDU_SUPABASE_CONFIG || {};
+if (!createClient) {
+  throw new Error('Ma’hdu Rahmat: Supabase JavaScript library did not load.');
+}
+
 if (!cfg.url || cfg.url.indexOf('PASTE_') === 0 || !cfg.publishableKey || cfg.publishableKey.indexOf('PASTE_') === 0) {
   console.error('Ma’hdu Rahmat: Supabase is not configured. Update supabase-config.js with your project URL and publishable key.');
 }
@@ -224,3 +227,7 @@ window.mripAuth = {
 };
 
 window.dispatchEvent(new Event('mripDbReady'));
+
+// Expose a simple diagnostic marker so the portal can distinguish
+// initialization from a failed external-library load.
+window.MAHDU_SUPABASE_READY = true;

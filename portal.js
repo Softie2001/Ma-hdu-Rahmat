@@ -18,12 +18,18 @@
   =================================================================== */
 
   function waitForDb() {
-    return new Promise(function (resolve) {
+    return new Promise(function (resolve, reject) {
       if (window.mripDb && window.mripAuth) { resolve(); return; }
-      window.addEventListener('mripDbReady', function handler() {
+      var timer = setTimeout(function () {
+        reject(new Error('Supabase initialization timed out. Check that supabase-init.js loaded correctly.'));
+      }, 12000);
+      function handler() {
+        clearTimeout(timer);
         window.removeEventListener('mripDbReady', handler);
-        resolve();
-      });
+        if (window.mripDb && window.mripAuth) resolve();
+        else reject(new Error('Supabase initialization failed.'));
+      }
+      window.addEventListener('mripDbReady', handler);
     });
   }
 

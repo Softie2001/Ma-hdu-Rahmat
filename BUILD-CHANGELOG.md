@@ -17,3 +17,11 @@ This is an incremental workflow foundation. Application-fee payment verification
 - Connected the browser configuration to the user's Supabase project `ppykmtroiyihoxwxqecn`.
 - Kept the Supabase publishable key only; no secret/service-role key was added.
 - Firebase has NOT been deleted or retired yet.
+
+
+## Supabase browser initialization fix — 2026-09-24
+- Removed the ES-module import from `supabase-init.js` so the build can initialize reliably from the normal browser script loader/local development environment.
+- The existing Supabase UMD browser library loaded by each page is now used via `window.supabase.createClient`.
+- Converted all page references to `supabase-init.js` from `type=module` to a normal script.
+- Added a 12-second initialization timeout to prevent registration/login from remaining on an endless spinner when the Supabase library fails to load.
+- Firebase remains untouched.
