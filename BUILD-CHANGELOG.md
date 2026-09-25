@@ -25,3 +25,9 @@ This is an incremental workflow foundation. Application-fee payment verification
 - Converted all page references to `supabase-init.js` from `type=module` to a normal script.
 - Added a 12-second initialization timeout to prevent registration/login from remaining on an endless spinner when the Supabase library fails to load.
 - Firebase remains untouched.
+
+
+## 2026-09-25 — Browser SDK loading fix
+- Changed the Supabase CDN include from the package root to the explicit UMD browser build (`dist/umd/supabase.min.js`).
+- Added a cache-busting version to `supabase-init.js` references so GitHub/browser caches do not keep the broken initializer.
+- Firebase remains untouched.

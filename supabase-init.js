@@ -10,7 +10,9 @@
 const createClient = window.supabase && window.supabase.createClient;
 const cfg = window.MAHDU_SUPABASE_CONFIG || {};
 if (!createClient) {
-  throw new Error('Ma’hdu Rahmat: Supabase JavaScript library did not load.');
+  console.error('Ma’hdu Rahmat: Supabase JavaScript library did not load. Check the UMD CDN script in the page source/network tab.');
+  window.MAHDU_SUPABASE_ERROR = 'Supabase JavaScript library did not load';
+  throw new Error(window.MAHDU_SUPABASE_ERROR);
 }
 
 if (!cfg.url || cfg.url.indexOf('PASTE_') === 0 || !cfg.publishableKey || cfg.publishableKey.indexOf('PASTE_') === 0) {
